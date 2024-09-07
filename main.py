@@ -1,9 +1,11 @@
 import arrow
+from abc import abstractmethod
+from functools import cached_property
 from argparse import ArgumentParser
 from csv import DictReader
 from collections import defaultdict
 from json import loads, dumps
-from os.path import isfile
+from os.path import isfile, getsize
 from time import sleep
 
 from onepassword import OnePassword
@@ -16,6 +18,9 @@ class DummyDict(dict):
         return key
 
 
+_ = lambda x: x
+
+
 def login(docname, vault_name='Private'):
     """ Look up creds in 1pass in the indicated value for the indicated document name and return a logged in EveryDollar client """
     op = OnePassword()
@@ -26,40 +31,59 @@ def login(docname, vault_name='Private'):
     return client
 
 
-def get_records(file_pointer, formatter=None):
-    """ Efficiently load a normalized version of each row in the provided file pointer """
-    for r in DictReader(file_pointer):
-        yield reformat_record(r, formatter)
+class ExtractTransform:
+    def __init__(self, fp, config: dict | None = None):
+        self.config = config
+        self.fp = fp
+        self.file_size = getsize(self.fp.name)
+
+    @property
+    def progress(self):
+        return self.fp.tell()/self.file_size
+
+    @property
+    def records(self):
+        """ Efficiently load a normalized version of each row in the provided file pointer """
+        for r in DictReader(self.fp):
+            yield self.reformat_record(r)
+
+        self.fp.seek(0)
+
+    @abstractmethod
+    def reformat_record(self, record):
+        pass
 
 
-def reformat_record(record, formatter):
-    """ reformat a single record by renaming the keys and performing any indicated conversions. The identity function is the fallback if no converter found. """
-    remapper = formatter['remapper']
-    converter = formatter['converter']
-    return {
-        # converter not found, use identity function, pass value to converter
-        remapper[f]: converter.get(remapper[f], lambda v: v)(record[f])
-        for f in remapper.keys()
-    }
+class Chase(ExtractTransform):
+    def reformat_record(self, record):
+        """ reformat a single record by renaming the keys and performing any indicated conversions. """
+        return {
+            # converter not found, use identity function, pass value to converter
+            self.reformat_key(f): self.convert_data(f, record)
+            for f in ['Details', 'Posting Date', 'Amount', 'Description', 'Type']
+        }
+
+    def reformat_key(self, key: str) -> str:
+        return {
+            'Details': 'type',
+            'Posting Date': 'date',
+            'Amount': 'amount',
+            'Description': 'merchant',
+            'Type': 'note',
+        }.get(key, key)
+
+    def convert_data(self, key: str, record: dict[str, str]) -> str | float | None:
+        return {
+            'Details': lambda v: {'DEBIT': 'expense'}.get(v.upper(), 'income'),
+            'Amount': float,
+            'Posting Date': lambda v: arrow.get(v, 'MM/DD/YYYY')
+        }.get(key, _)(record[key])
+
 
 if __name__ == '__main__':
     # Currently only accepts chase's transaction output but could easily be extended
     formats = {
-        'chase': {
-            'remapper': DummyDict({
-                'Details': 'type',
-                'Posting Date': 'date',
-                'Amount': 'amount',
-                'Description': 'merchant',
-                'Type': 'note',
-            }),
-            # return the value unmodified
-            'converter': defaultdict(lambda x: x, {
-                'type': lambda v: {'DEBIT': 'expense'}.get(v.upper(), 'income'),
-                'amount': float,
-                'date': lambda v: arrow.get(v, 'MM/DD/YYYY')
-            }),
-        },
+        'chase': Chase,
     }
 
     parser = ArgumentParser()
@@ -83,10 +107,8 @@ if __name__ == '__main__':
     parser.add_argument('--op-title', type=str, default='Ramseysolutions')
 
     args = parser.parse_args()
-    formatter = formats[args.input_format]
 
-    records_generator = get_records(args.transactions_file, formatter)
     client = login(args.op_title, args.op_vault)
 
-    for record in records_generator:
+    for record in formats[args.input_format](args.transactions_file).records:
         client.add_transaction(record['date'], record['merchant'], record['amount'], record['type'], record['note'])
