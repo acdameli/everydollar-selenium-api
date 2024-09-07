@@ -7,7 +7,7 @@ pip install selenium
 
 Credits: This is possible thanks to the developers of selenium and selenium-python
 """
-
+from __future__ import annotations
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException
@@ -18,6 +18,7 @@ from selenium.webdriver.firefox.options import Options
 from selenium.common.exceptions import NoSuchElementException
 from time import time, sleep
 from datetime import datetime
+
 
 class EveryDollarAPI:
     """
@@ -58,12 +59,25 @@ class EveryDollarAPI:
         """
         Waits for the given xpath element to be loaded
         """
+        element_present = EC.presence_of_element_located((by, val))
         try:
-            element_present = EC.presence_of_element_located((by, val))
-            WebDriverWait(self.driver, self.timeout).until(element_present)
+            self._wait_for(element_present)
         except TimeoutException:
             print("Timed out waiting for page to load")
             raise TimeoutError
+
+    def _wait_for_clickable(self, by, val):
+        """
+        Waits for the given xpath element to be clickable
+        """
+        try:
+            self._wait_for(EC.element_to_be_clickable((by, val)))
+        except TimeoutException:
+            print("Timed out waiting for an element to be clickable")
+            raise TimeoutError
+
+    def _wait_for(self, test):
+        WebDriverWait(self.driver, self.timeout).until(test)
 
     def __del__(self):
         """
@@ -95,9 +109,37 @@ class EveryDollarAPI:
         print("Successfully logged in")
 
     def _open_transaction_menu(self):
-        self._wait_for_load(By.XPATH, self.ADD_TRANSACTION_BTN_XPATH)
-        self.driver.find_element(By.XPATH, self.ADD_TRANSACTION_BTN_XPATH).click()
+        target = By.XPATH, self.ADD_TRANSACTION_BTN_XPATH
+        self._wait_for_load(*target)
+        self._wait_for_clickable(*target)
+
+        # clickable test isn't sufficient sometimes
+        self._retry(lambda: self.driver.find_element(By.XPATH, self.ADD_TRANSACTION_BTN_XPATH).click())
+
         self._wait_for_load(By.XPATH, self.MERCHANT_INPUT_XPATH)
+
+    def _retry(self, func: callable, attempts: int = 3, wait: int = 1):
+        """
+        Execute an arbitrary callable catching any exceptions and retrying up to attempts times.
+        Each time an exception occurs if we haven't exceeded our attempts we sleep for the indicated
+        period and try again.
+
+        input:
+            func - a callable that accepts no arguments
+            attempts - optional number of attempts to make. Default 3, will never allow less than 2)
+            wait - optional number of seconds to wait between attempts. Default 1, must be > 0
+        """
+        attempts = max(attempts, 2)       # If you only want to execute this one time why are you calling this?
+        wait = wait if wait > 0 else 0.5  # Can explicitly be set to less than a half second but not below 0
+        while True:
+            try:
+                attempts -= 1
+                func()
+                return
+            except:
+                if attempts < 1:
+                    raise
+                sleep(wait)
 
     def _transaction_type(self, type):
         """
@@ -148,6 +190,24 @@ class EveryDollarAPI:
         merch_input = self.driver.find_element(By.XPATH, self.MERCHANT_INPUT_XPATH)
         merch_input.send_keys(merchant)
 
+    def _enter_note(self, note):
+        """
+        Enters the note into the form. Opens the options area to expose thie field if needed
+
+        input:
+            note - string
+        """
+        self._open_more_options()
+        note_field = self.driver.find_element(By.XPATH, "//*[@name='note']")
+        note_field.send_keys(note)
+
+    def _open_more_options(self):
+        """
+        Opens the more options section if it is not already open
+        """
+        more_button = self.driver.find_element(By.XPATH, "//*[@id='TransactionModal_moreOptions']")
+        more_button.click()
+
     def _submit_transaction(self):
         """
         Submits the add new transaction form
@@ -155,11 +215,11 @@ class EveryDollarAPI:
         submit_btn = self.driver.find_element(By.ID, self.TRANSACTION_SUBMIT_BTN_ID)
         submit_btn.click()
 
-
-    def add_transaction(self, date: datetime , merchant: str, amount: float, type: str = 'expense'):
+    def add_transaction(self, date: datetime , merchant: str, amount: float, type: str = 'expense', note: str|None = None):
         self._open_transaction_menu()
         self._transaction_type(type)
         self._enter_amount(amount)
         self._enter_date(date)
         self._enter_merchant(merchant)
+        self._enter_note(note)
         self._submit_transaction()
