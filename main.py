@@ -51,7 +51,7 @@ if __name__ == '__main__':
   formats = {
     'chase': {
       'remapper': DummyDict({'Details': 'type', 'Posting Date': 'date', 'Amount': 'amount', 'Description': 'merchant', 'Type': 'note'}),
-      'converter': DummyDict({'type': lambda v: 'expense' if v.lower() == 'DEBIT' else 'income', 'amount': float, 'date': lambda v: arrow.get(v, 'MM/DD/YYYY')}),
+      'converter': DummyDict({'type': lambda v: 'expense' if v.upper() == 'DEBIT' else 'income', 'amount': float, 'date': lambda v: arrow.get(v, 'MM/DD/YYYY')}),
     },
   }
 
